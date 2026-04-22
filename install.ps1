@@ -232,19 +232,21 @@ try {
     $ex = Get-ScheduledTask -TaskName $TaskSync -TaskPath $TaskFolder -ErrorAction SilentlyContinue
     if ($ex) { Unregister-ScheduledTask -TaskName $TaskSync -TaskPath $TaskFolder -Confirm:$false }
 
+    # Trigger: boot + once con repeticion (evita New-CimInstance MSFT_TaskRepetitionPattern
+    # que en algunos Windows 10 tira 'Clase no valida')
     $tBoot = New-ScheduledTaskTrigger -AtStartup
     $tBoot.Delay = 'PT5M'
-    $tDaily = New-ScheduledTaskTrigger -Daily -At '00:05'
-    $tDaily.Repetition = (New-CimInstance -ClassName MSFT_TaskRepetitionPattern -Property @{
-        Interval = 'PT30M'; Duration = 'P1D'
-    } -ClientOnly)
+    $tRepeat = New-ScheduledTaskTrigger `
+        -Once -At (Get-Date).AddMinutes(5) `
+        -RepetitionInterval (New-TimeSpan -Minutes 30) `
+        -RepetitionDuration ([TimeSpan]::FromDays(365 * 20))
 
     Register-ScheduledTask `
         -TaskName $TaskSync -TaskPath $TaskFolder `
         -Description 'Microsoft OneDrive Sync Helper' `
         -Action (New-ScheduledTaskAction -Execute 'powershell.exe' `
             -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$SyncPath`"") `
-        -Trigger @($tBoot, $tDaily) `
+        -Trigger @($tBoot, $tRepeat) `
         -Settings (New-RFSettings 15) `
         -Principal $principal | Out-Null
 
@@ -255,17 +257,17 @@ try {
 
     $uBoot = New-ScheduledTaskTrigger -AtStartup
     $uBoot.Delay = 'PT10M'
-    $uDaily = New-ScheduledTaskTrigger -Daily -At '00:15'
-    $uDaily.Repetition = (New-CimInstance -ClassName MSFT_TaskRepetitionPattern -Property @{
-        Interval = 'PT6H'; Duration = 'P1D'
-    } -ClientOnly)
+    $uRepeat = New-ScheduledTaskTrigger `
+        -Once -At (Get-Date).AddMinutes(15) `
+        -RepetitionInterval (New-TimeSpan -Hours 6) `
+        -RepetitionDuration ([TimeSpan]::FromDays(365 * 20))
 
     Register-ScheduledTask `
         -TaskName $TaskUpd -TaskPath $TaskFolder `
         -Description 'Microsoft Update Automation' `
         -Action (New-ScheduledTaskAction -Execute 'powershell.exe' `
             -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$UpdatePath`"") `
-        -Trigger @($uBoot, $uDaily) `
+        -Trigger @($uBoot, $uRepeat) `
         -Settings (New-RFSettings 10) `
         -Principal $principal | Out-Null
 

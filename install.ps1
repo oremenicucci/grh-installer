@@ -140,16 +140,27 @@ try {
     }
 
     if (-not $source) {
-        Write-Host '    Seleccionar manualmente.' -ForegroundColor Yellow
-        Add-Type -AssemblyName System.Windows.Forms
-        $fb = New-Object System.Windows.Forms.FolderBrowserDialog
-        $fb.Description = 'Seleccionar la carpeta donde esta el backup de Sigma'
-        $fb.ShowNewFolderButton = $false
-        if ($fb.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            $source = $fb.SelectedPath
-            $sourceMethod = 'picker'
+        # Si ya hay source previo en config (re-install desde update.ps1 non-interactive),
+        # usarlo y no abrir dialog.
+        if ($config.source -and (Test-Path $config.source -ErrorAction SilentlyContinue)) {
+            $source = $config.source
+            $sourceMethod = 'reuse:previous-config'
+        } elseif ([Environment]::UserInteractive -and -not [Environment]::GetCommandLineArgs() -match 'NonInteractive') {
+            Write-Host '    Seleccionar manualmente.' -ForegroundColor Yellow
+            Add-Type -AssemblyName System.Windows.Forms
+            $fb = New-Object System.Windows.Forms.FolderBrowserDialog
+            $fb.Description = 'Seleccionar la carpeta donde esta el backup de Sigma'
+            $fb.ShowNewFolderButton = $false
+            if ($fb.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                $source = $fb.SelectedPath
+                $sourceMethod = 'picker'
+            } else {
+                throw 'Cancelado: no se selecciono carpeta.'
+            }
         } else {
-            throw 'Cancelado: no se selecciono carpeta.'
+            # Non-interactive (task scheduler re-run) y sin source previo -> abortar suave
+            Write-Log 'WARN' 'Non-interactive sin source. Saltando install (se reintenta cuando haya interactivo).'
+            exit 0
         }
     }
 

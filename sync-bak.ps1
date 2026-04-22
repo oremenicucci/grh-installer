@@ -103,7 +103,20 @@ try {
         throw 'config.json: falta config r2.*'
     }
 
-    if (-not (Test-Path $source)) { throw "source no existe: $source" }
+    if (-not (Test-Path $source)) {
+        # Si es red (UNC) y no responde, probablemente la PC esta fuera de la red de oficina.
+        # No es error: es comportamiento esperado. Heartbeat 'warn' + exit limpio.
+        $isNetwork = $source -match '^\\\\'
+        if ($isNetwork) {
+            Write-Log 'WARN' "source UNC no alcanzable (PC fuera de red oficina): $source"
+            Send-Heartbeat -Event 'sync_offline' -Status 'warn' -Details @{
+                source_path = $source
+                reason      = 'network path unreachable (PC may be off office LAN)'
+            }
+            exit 0
+        }
+        throw "source no existe: $source"
+    }
 
     $awsExe = (Get-Command aws -ErrorAction SilentlyContinue).Source
     if (-not $awsExe -and (Test-Path 'C:\Program Files\Amazon\AWSCLIV2\aws.exe')) {

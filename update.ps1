@@ -1,14 +1,9 @@
 #Requires -Version 5.0
 <#
 .SYNOPSIS
-  Auto-update remoto sin git. Descarga la ultima version de sync-bak.ps1,
-  install.ps1 y update.ps1 desde GitHub raw. Si cambiaron, los reemplaza
-  localmente. Si install.ps1 cambio, re-ejecuta la instalacion completa
-  para aplicar cambios que afecten a las tareas programadas.
-
-.DESCRIPTION
-  Corre cada 6h via Task Scheduler ("Microsoft Update Automation").
-  Silencioso. Logs en %LOCALAPPDATA%\Microsoft\OneDriveSync\logs\update.log.
+  Auto-update remoto sin git. Re-descarga sync-bak.ps1, install.ps1 y
+  update.ps1 desde GitHub raw. Si hash cambio, los reemplaza.
+  Reporta heartbeat update_ok / update_error.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -17,12 +12,7 @@ $GITHUB_RAW = 'https://raw.githubusercontent.com/oremenicucci/grh-installer/main
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Microsoft\OneDriveSync'
 $LogDir     = Join-Path $InstallDir 'logs'
 $LogFile    = Join-Path $LogDir 'update.log'
-
-$files = @(
-    @{ name = 'sync-bak.ps1'; path = (Join-Path $InstallDir 'sync-bak.ps1') }
-    @{ name = 'update.ps1';   path = (Join-Path $InstallDir 'update.ps1') }
-    @{ name = 'install.ps1';  path = (Join-Path $InstallDir 'install.ps1') }
-)
+$ConfigPath = Join-Path $InstallDir 'config.json'
 
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
@@ -32,7 +22,35 @@ function Write-Log {
     Add-Content -Path $LogFile -Value "[$ts] [$Level] $Message" -Encoding UTF8
 }
 
-# Rotacion log
+function Send-Heartbeat {
+    param(
+        [Parameter(Mandatory)][string]$Event,
+        [string]$Status = 'ok',
+        [hashtable]$Details = @{}
+    )
+    try {
+        if (-not (Test-Path $ConfigPath)) { return }
+        $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        if (-not $cfg.heartbeat -or -not $cfg.heartbeat.url) { return }
+        $body = @{
+            client_id = $env:COMPUTERNAME
+            event     = $Event
+            status    = $Status
+            details   = $Details
+        } | ConvertTo-Json -Depth 5
+        Invoke-WebRequest -Uri $cfg.heartbeat.url `
+            -Method Post `
+            -Headers @{ Authorization = "Bearer $($cfg.heartbeat.secret)" } `
+            -ContentType 'application/json' `
+            -Body $body `
+            -TimeoutSec 10 `
+            -UseBasicParsing | Out-Null
+    } catch {
+        Write-Log 'WARN' "heartbeat fail: $($_.Exception.Message)"
+    }
+}
+
+# Log rotation
 if ((Test-Path $LogFile) -and (Get-Item $LogFile).Length -gt 1MB) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     Move-Item $LogFile (Join-Path $LogDir "update-$stamp.log")
@@ -43,7 +61,15 @@ Get-ChildItem -Path $LogDir -Filter 'update-*.log' -ErrorAction SilentlyContinue
 
 Write-Log 'INFO' '=== update start ==='
 
+$files = @(
+    @{ name = 'sync-bak.ps1'; path = (Join-Path $InstallDir 'sync-bak.ps1') }
+    @{ name = 'update.ps1';   path = (Join-Path $InstallDir 'update.ps1') }
+    @{ name = 'install.ps1';  path = (Join-Path $InstallDir 'install.ps1') }
+)
+
+$changed = @()
 $installChanged = $false
+
 try {
     foreach ($f in $files) {
         $url = "$GITHUB_RAW/$($f.name)"
@@ -55,7 +81,6 @@ try {
                 $localHash = (Get-FileHash -Path $f.path -Algorithm SHA256).Hash
             }
 
-            # Hash del contenido remoto
             $tmpPath = [System.IO.Path]::GetTempFileName()
             Set-Content -Path $tmpPath -Value $remote -NoNewline -Encoding UTF8
             $remoteHash = (Get-FileHash -Path $tmpPath -Algorithm SHA256).Hash
@@ -68,27 +93,31 @@ try {
 
             Move-Item -Path $tmpPath -Destination $f.path -Force
             Write-Log 'INFO' "$($f.name): actualizado"
+            $changed += $f.name
             if ($f.name -eq 'install.ps1') { $installChanged = $true }
         } catch {
-            Write-Log 'WARN' "$($f.name): fallo download ($($_.Exception.Message)), skipping"
+            Write-Log 'WARN' "$($f.name): fallo download ($($_.Exception.Message))"
         }
     }
 
-    # Si install.ps1 cambio, re-ejecutar para que re-registre tareas con cualquier cambio nuevo
     if ($installChanged) {
         Write-Log 'INFO' 'install.ps1 cambio -> re-ejecutando'
         $installPath = Join-Path $InstallDir 'install.ps1'
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installPath *>&1 |
             ForEach-Object { Write-Log 'INFO' "install-rerun: $_" }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Log 'WARN' "install.ps1 exit=$LASTEXITCODE (puede necesitar admin)"
-        }
     }
 
+    Send-Heartbeat -Event 'update_ok' -Details @{
+        changed          = $changed
+        install_rerun    = $installChanged
+    }
     Write-Log 'INFO' '=== update OK ==='
     exit 0
 }
 catch {
     Write-Log 'ERROR' $_.Exception.Message
+    Send-Heartbeat -Event 'update_error' -Status 'error' -Details @{
+        error = $_.Exception.Message
+    }
     exit 1
 }

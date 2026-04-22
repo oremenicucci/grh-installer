@@ -72,6 +72,30 @@ try {
     if (-not (Test-Path $ConfigPath)) { throw "No existe config: $ConfigPath" }
     $script:cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
+    # --- Discover / extract SQL (si esta disponible en el install dir) ---
+    # Corre una vez por ciclo. Si no hay 'sql' configurado -> discover.
+    # Si ya hay -> extract (query directo a Sigma SQL).
+    $discoverScript = Join-Path $InstallDir 'discover-sql.ps1'
+    $extractScript  = Join-Path $InstallDir 'extract-sql.ps1'
+    if (-not $script:cfg.sql -and (Test-Path $discoverScript)) {
+        Write-Log 'INFO' 'invocando discover-sql.ps1 (primera vez)'
+        try {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $discoverScript
+            # Re-leer config despues de discover (puede haber agregado sql.server)
+            $script:cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        } catch {
+            Write-Log 'WARN' "discover fallo: $($_.Exception.Message)"
+        }
+    }
+    if ($script:cfg.sql -and (Test-Path $extractScript)) {
+        Write-Log 'INFO' 'invocando extract-sql.ps1'
+        try {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $extractScript
+        } catch {
+            Write-Log 'WARN' "extract fallo: $($_.Exception.Message)"
+        }
+    }
+
     $source = $script:cfg.source
     $r2 = $script:cfg.r2
     if (-not $source) { throw 'config.json: falta source' }

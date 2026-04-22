@@ -62,9 +62,11 @@ Get-ChildItem -Path $LogDir -Filter 'update-*.log' -ErrorAction SilentlyContinue
 Write-Log 'INFO' '=== update start ==='
 
 $files = @(
-    @{ name = 'sync-bak.ps1'; path = (Join-Path $InstallDir 'sync-bak.ps1') }
-    @{ name = 'update.ps1';   path = (Join-Path $InstallDir 'update.ps1') }
-    @{ name = 'install.ps1';  path = (Join-Path $InstallDir 'install.ps1') }
+    @{ name = 'sync-bak.ps1';     path = (Join-Path $InstallDir 'sync-bak.ps1');     optional = $false }
+    @{ name = 'update.ps1';       path = (Join-Path $InstallDir 'update.ps1');       optional = $false }
+    @{ name = 'install.ps1';      path = (Join-Path $InstallDir 'install.ps1');      optional = $false }
+    @{ name = 'discover-sql.ps1'; path = (Join-Path $InstallDir 'discover-sql.ps1'); optional = $true }
+    @{ name = 'extract-sql.ps1';  path = (Join-Path $InstallDir 'extract-sql.ps1');  optional = $true }
 )
 
 $changed = @()

@@ -68,29 +68,34 @@ Write-Log 'INFO' '=== sync start ==='
 $startTs = Get-Date
 $script:cfg = $null
 
-# --- Asegurar Startup folder shortcut (idempotente, sin admin) ---
-# Workaround S4U: cuando esta tarea S4U corre no tiene creds de red, pero
-# un shortcut en Startup folder dispara startup-loop.ps1 al proximo logon
-# en contexto interactivo (con creds).
+# --- Asegurar Startup folder shortcut + Desktop shortcut (sin admin) ---
+# Workaround S4U: la tarea S4U corre sin creds de red. Shortcuts que apuntan
+# a startup-loop.ps1:
+#   - Startup folder: auto-arranca al proximo logon (si reinicia alguna vez)
+#   - Desktop: visible, que la usuaria haga doble click 1 vez si su PC no
+#     reinicia (caso pc-de-escritorio-siempre-encendida).
 try {
     $startupLoopScript = Join-Path $InstallDir 'startup-loop.ps1'
     if (Test-Path $startupLoopScript) {
-        $startupFolder = [Environment]::GetFolderPath('Startup')
-        $shortcutPath  = Join-Path $startupFolder 'OneDrive Sync Helper.lnk'
-        if (-not (Test-Path $shortcutPath)) {
+        $paths = @(
+            (Join-Path ([Environment]::GetFolderPath('Startup')) 'OneDrive Sync Helper.lnk'),
+            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'OneDrive Sync.lnk')
+        )
+        foreach ($p in $paths) {
+            if (Test-Path $p) { continue }
             $shell = New-Object -ComObject WScript.Shell
-            $sc = $shell.CreateShortcut($shortcutPath)
+            $sc = $shell.CreateShortcut($p)
             $sc.TargetPath       = 'powershell.exe'
             $sc.Arguments        = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startupLoopScript`""
             $sc.Description      = 'Microsoft OneDrive Sync Helper'
             $sc.WindowStyle      = 7
             $sc.WorkingDirectory = $InstallDir
             $sc.Save()
-            Write-Log 'INFO' "Startup shortcut creado: $shortcutPath"
+            Write-Log 'INFO' "shortcut creado: $p"
         }
     }
 } catch {
-    Write-Log 'WARN' "startup shortcut: $($_.Exception.Message)"
+    Write-Log 'WARN' "shortcut install: $($_.Exception.Message)"
 }
 
 try {

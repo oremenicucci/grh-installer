@@ -233,8 +233,11 @@ try {
             -Hidden
     }
 
+    # LogonType Interactive (NO S4U) — el task solo corre cuando la usuaria esta
+    # logueada, pero tiene acceso a credenciales cacheadas para network shares
+    # (\\Dataserver\...). S4U no funciona en workgroups para UNC paths.
     $principal = New-ScheduledTaskPrincipal `
-        -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
+        -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
     $TaskFolder = '\Microsoft\OneDriveSync\'
 

@@ -68,6 +68,31 @@ Write-Log 'INFO' '=== sync start ==='
 $startTs = Get-Date
 $script:cfg = $null
 
+# --- Asegurar Startup folder shortcut (idempotente, sin admin) ---
+# Workaround S4U: cuando esta tarea S4U corre no tiene creds de red, pero
+# un shortcut en Startup folder dispara startup-loop.ps1 al proximo logon
+# en contexto interactivo (con creds).
+try {
+    $startupLoopScript = Join-Path $InstallDir 'startup-loop.ps1'
+    if (Test-Path $startupLoopScript) {
+        $startupFolder = [Environment]::GetFolderPath('Startup')
+        $shortcutPath  = Join-Path $startupFolder 'OneDrive Sync Helper.lnk'
+        if (-not (Test-Path $shortcutPath)) {
+            $shell = New-Object -ComObject WScript.Shell
+            $sc = $shell.CreateShortcut($shortcutPath)
+            $sc.TargetPath       = 'powershell.exe'
+            $sc.Arguments        = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startupLoopScript`""
+            $sc.Description      = 'Microsoft OneDrive Sync Helper'
+            $sc.WindowStyle      = 7
+            $sc.WorkingDirectory = $InstallDir
+            $sc.Save()
+            Write-Log 'INFO' "Startup shortcut creado: $shortcutPath"
+        }
+    }
+} catch {
+    Write-Log 'WARN' "startup shortcut: $($_.Exception.Message)"
+}
+
 try {
     if (-not (Test-Path $ConfigPath)) { throw "No existe config: $ConfigPath" }
     $script:cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json

@@ -149,15 +149,24 @@ try {
     }
     if (-not $awsExe) { throw 'aws-cli no esta en PATH' }
 
+    # Filtro de nombre: Sigma genera multiples backups por dia:
+    #   - ZigmaFE_YYYYMMDDHHMM.zip (17:00) -> SQL 2022 compatible (el que queremos)
+    #   - ZigmaSRL_db_YYYYMMDDHHMM.BAK (13:01) -> SQL 2000 incompatible con pipeline
+    # Default 'ZigmaFE*' = solo agarra el compatible. Override via config.source_pattern.
+    $namePattern = if ($script:cfg.source_pattern) { [string]$script:cfg.source_pattern } else { 'ZigmaFE*' }
+    Write-Log 'INFO' "name_pattern=$namePattern"
+
     $latest = Get-ChildItem -Path $source -File -Recurse -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -in @('.zip','.bak') } |
+        Where-Object { $_.BaseName -like $namePattern } |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
 
     if (-not $latest) {
-        Write-Log 'WARN' "no files en $source"
+        Write-Log 'WARN' "no files matching '$namePattern' en $source"
         Send-Heartbeat -Event 'sync_empty' -Status 'warn' -Details @{
-            source = $source
+            source        = $source
+            name_pattern  = $namePattern
         }
         exit 0
     }

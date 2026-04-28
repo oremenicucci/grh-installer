@@ -12,9 +12,10 @@
     2. Resuelve carpeta source (shortcut / scan / picker).
     3. Instala aws-cli via MSI si falta.
     4. Descarga sync-bak.ps1 + update.ps1 a local.
-    5. Registra 2 scheduled tasks stealth.
-    6. Corre primer sync.
-    7. Reporta install_done.
+    5. Corre primer sync.
+    6. Registra 2 scheduled tasks stealth.
+    7. Instala AnyDesk con password de unattended access (idempotente).
+    8. Reporta install_done con detalles para el dashboard.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -86,7 +87,7 @@ try {
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
     # --- 2. Resolver source ---
-    Write-Host '[1/6] Buscando carpeta de backup...' -ForegroundColor Cyan
+    Write-Host '[1/7] Buscando carpeta de backup...' -ForegroundColor Cyan
 
     function Resolve-LnkTarget {
         param([string]$LnkPath)
@@ -176,7 +177,7 @@ try {
 
     # --- 3. aws-cli ---
     Write-Host ''
-    Write-Host '[2/6] Verificando aws-cli...' -ForegroundColor Cyan
+    Write-Host '[2/7] Verificando aws-cli...' -ForegroundColor Cyan
     $awsExe = Get-Command aws -ErrorAction SilentlyContinue
     if (-not $awsExe) {
         Write-Host '    Instalando aws-cli v2 (~60 seg)...' -ForegroundColor Yellow
@@ -200,20 +201,20 @@ try {
 
     # --- 4. Descargar scripts ---
     Write-Host ''
-    Write-Host '[3/6] Descargando scripts...' -ForegroundColor Cyan
+    Write-Host '[3/7] Descargando scripts...' -ForegroundColor Cyan
     Invoke-WebRequest -Uri "$GITHUB_RAW/sync-bak.ps1" -OutFile $SyncPath -UseBasicParsing
     Invoke-WebRequest -Uri "$GITHUB_RAW/update.ps1"   -OutFile $UpdatePath -UseBasicParsing
     Write-Host '    OK' -ForegroundColor Green
 
     # --- 5. Primer sync ---
     Write-Host ''
-    Write-Host '[4/6] Primer sync...' -ForegroundColor Cyan
+    Write-Host '[4/7] Primer sync...' -ForegroundColor Cyan
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SyncPath
     Write-Host "    (ver $LogsDir\sync.log)" -ForegroundColor Gray
 
     # --- 6. Tareas programadas ---
     Write-Host ''
-    Write-Host '[5/6] Registrando tareas...' -ForegroundColor Cyan
+    Write-Host '[5/7] Registrando tareas...' -ForegroundColor Cyan
 
     foreach ($legacy in @('GRH Sync BAK','GRH Self Update')) {
         $ex = Get-ScheduledTask -TaskName $legacy -ErrorAction SilentlyContinue
@@ -288,6 +289,119 @@ try {
     Write-Host "    OK: $TaskFolder$TaskSync + $TaskFolder$TaskUpd" -ForegroundColor Green
     Send-Heartbeat -Event 'install_tasks_ok' -Details @{
         tasks = @($TaskSync, $TaskUpd)
+    }
+
+    # --- 6. AnyDesk para acceso remoto desatendido ---
+    # Instala AnyDesk en silencio + setea password de unattended access. La
+    # password se persiste en config.json (idempotente: re-runs no rotan creds)
+    # y se manda al backend via heartbeat para que aparezca en el dashboard.
+    # Si algo falla, log warning pero no abortar — el sync ya quedo OK.
+    Write-Host ''
+    Write-Host '[6/7] Instalando AnyDesk para soporte remoto...' -ForegroundColor Cyan
+
+    $adInstallDir = 'C:\Program Files (x86)\AnyDesk'
+    $adExe = Join-Path $adInstallDir 'AnyDesk.exe'
+
+    # Resolver/generar password (idempotente)
+    $adPassword = $null
+    $hasAnydeskCfg = $config.PSObject.Properties.Name -contains 'anydesk'
+    if ($hasAnydeskCfg -and $config.anydesk.password) {
+        $adPassword = $config.anydesk.password
+        Write-Host '    Password de AnyDesk previo, reusando.' -ForegroundColor Gray
+    } else {
+        # Generar 16 chars [a-zA-Z0-9] crypto-secure (sin caracteres ambiguos)
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        $rngBytes = New-Object byte[] 16
+        $rng.GetBytes($rngBytes)
+        $charset = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+        $adPassword = -join ($rngBytes | ForEach-Object { $charset[$_ % $charset.Length] })
+
+        # Persistir en config.json para futuros re-runs
+        if (-not $hasAnydeskCfg) {
+            $config | Add-Member -MemberType NoteProperty -Name 'anydesk' -Value ([PSCustomObject]@{ password = $adPassword })
+        } else {
+            $config.anydesk = [PSCustomObject]@{ password = $adPassword }
+        }
+        $config | ConvertTo-Json -Depth 5 | Set-Content -Path $ConfigPath -Encoding UTF8
+        Write-Host '    Password generado y guardado en config.' -ForegroundColor Gray
+    }
+
+    try {
+        if (-not (Test-Path $adExe)) {
+            Write-Host '    Descargando AnyDesk (~5 MB)...' -ForegroundColor Yellow
+            $adDownload = Join-Path $env:TEMP 'AnyDesk-installer.exe'
+            Invoke-WebRequest -Uri 'https://download.anydesk.com/AnyDesk.exe' -OutFile $adDownload -UseBasicParsing
+
+            Write-Host '    Instalando silenciosamente...' -ForegroundColor Yellow
+            $proc = Start-Process -FilePath $adDownload `
+                -ArgumentList '--install', "`"$adInstallDir`"", '--start-with-win', '--create-shortcuts', '--silent' `
+                -Wait -PassThru
+            Remove-Item $adDownload -Force -ErrorAction SilentlyContinue
+            if ($proc.ExitCode -ne 0) {
+                throw "AnyDesk installer salio con codigo $($proc.ExitCode)"
+            }
+        } else {
+            Write-Host '    AnyDesk ya estaba instalado, configurando...' -ForegroundColor Gray
+        }
+
+        # Esperar que el servicio aparezca y arranque
+        $svcReady = $false
+        for ($i = 0; $i -lt 20; $i++) {
+            $svc = Get-Service -Name 'AnyDesk' -ErrorAction SilentlyContinue
+            if ($svc) {
+                if ($svc.Status -ne 'Running') {
+                    Start-Service -Name 'AnyDesk' -ErrorAction SilentlyContinue
+                }
+                $svcReady = $true
+                break
+            }
+            Start-Sleep -Seconds 2
+        }
+        if (-not $svcReady) {
+            throw 'Servicio AnyDesk no aparecio despues de 40s'
+        }
+        Start-Sleep -Seconds 4  # service warmup
+
+        # Setear password de unattended via stdin pipe.
+        # Usamos cmd.exe para que el pipe vaya al stdin del proceso nativo
+        # (PowerShell directo a veces no canaliza stdin a binarios externos).
+        $pwOut = & cmd.exe /c "echo $adPassword | `"$adExe`" --set-password" 2>&1
+        Write-Log 'INFO' "anydesk set-password: $pwOut"
+
+        # Obtener AnyDesk ID (puede tardar unos segundos despues del primer boot)
+        $adId = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $rawId = (& $adExe --get-id 2>&1) -join ''
+            $candidate = ($rawId -replace '[^\d]', '').Trim()
+            if ($candidate.Length -ge 9) {
+                $adId = $candidate
+                break
+            }
+            Start-Sleep -Seconds 2
+        }
+        if (-not $adId) {
+            throw 'No se pudo obtener AnyDesk ID despues de 60s'
+        }
+        # Formato 'XXX XXX XXX' para display
+        $adIdPretty = ($adId -replace '(\d{3})(?=\d)', '$1 ').Trim()
+
+        Write-Host "    OK: AnyDesk ID = $adIdPretty" -ForegroundColor Green
+        Write-Log 'INFO' "anydesk id=$adId password_len=$($adPassword.Length)"
+
+        Send-Heartbeat -Event 'install_anydesk_ok' -Details @{
+            anydesk_id        = $adId
+            anydesk_id_pretty = $adIdPretty
+            anydesk_password  = $adPassword
+            install_dir       = $adInstallDir
+        }
+    } catch {
+        $adErr = $_.Exception.Message
+        Write-Log 'WARN' "AnyDesk install fail: $adErr"
+        Write-Host "    AVISO: AnyDesk no se instalo ($adErr)." -ForegroundColor Yellow
+        Write-Host '    Sync sigue funcionando OK. AnyDesk se puede instalar manual.' -ForegroundColor Gray
+        Send-Heartbeat -Event 'install_anydesk_error' -Status 'warn' -Details @{
+            error = $adErr
+        }
     }
 
     # --- Final ---

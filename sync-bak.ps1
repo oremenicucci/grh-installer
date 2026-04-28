@@ -236,6 +236,57 @@ try {
             duracion_ms  = $duracionMs
             sha256       = $sourceHash.Substring(0, 12) + '...'
         }
+
+        # --- Railway pipeline trigger (event-driven) ---
+        # Si hay railway.* en config, despues de un upload exitoso disparamos
+        # el cron del pipeline en Railway via GraphQL API. Asi el dashboard
+        # se actualiza en ~5 min en vez de esperar al cron diario.
+        # Si Railway esta caido o el token caduco, log warn y seguir — el
+        # cron normal se va a encargar al final del dia.
+        if ($script:cfg.railway -and
+            $script:cfg.railway.token -and
+            $script:cfg.railway.service_id -and
+            $script:cfg.railway.environment_id) {
+            try {
+                $rwBody = @{
+                    query = 'mutation Deploy($serviceId: String!, $environmentId: String!) { serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId) }'
+                    variables = @{
+                        serviceId     = $script:cfg.railway.service_id
+                        environmentId = $script:cfg.railway.environment_id
+                    }
+                } | ConvertTo-Json -Depth 5 -Compress
+
+                $rwResp = Invoke-WebRequest `
+                    -Uri 'https://backboard.railway.com/graphql/v2' `
+                    -Method Post `
+                    -Headers @{
+                        'Authorization' = "Bearer $($script:cfg.railway.token)"
+                        'Content-Type'  = 'application/json'
+                    } `
+                    -Body $rwBody `
+                    -TimeoutSec 30 `
+                    -UseBasicParsing
+                $respText = $rwResp.Content
+                # Detectar errores GraphQL en el body (HTTP 200 + errors[]).
+                if ($respText -match '"errors"') {
+                    Write-Log 'WARN' "railway trigger: graphql errors: $respText"
+                    Send-Heartbeat -Event 'railway_trigger_failed' -Status 'warn' -Details @{
+                        error = ($respText.Substring(0, [Math]::Min(500, $respText.Length)))
+                    }
+                } else {
+                    Write-Log 'INFO' "railway trigger OK: HTTP $($rwResp.StatusCode)"
+                    Send-Heartbeat -Event 'railway_triggered' -Details @{
+                        filename       = $latest.Name
+                        railway_status = $rwResp.StatusCode
+                    }
+                }
+            } catch {
+                Write-Log 'WARN' "railway trigger fail: $($_.Exception.Message)"
+                Send-Heartbeat -Event 'railway_trigger_failed' -Status 'warn' -Details @{
+                    error = $_.Exception.Message
+                }
+            }
+        }
     } finally {
         Remove-Item Env:\AWS_ACCESS_KEY_ID -ErrorAction SilentlyContinue
         Remove-Item Env:\AWS_SECRET_ACCESS_KEY -ErrorAction SilentlyContinue

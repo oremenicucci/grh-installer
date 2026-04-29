@@ -241,15 +241,21 @@ try {
         # Si hay railway.* en config, despues de un upload exitoso disparamos
         # el cron del pipeline en Railway via GraphQL API. Asi el dashboard
         # se actualiza en ~5 min en vez de esperar al cron diario.
-        # Si Railway esta caido o el token caduco, log warn y seguir — el
-        # cron normal se va a encargar al final del dia.
+        #
+        # NOTAS de implementacion:
+        # - Project tokens van en header 'Project-Access-Token' (NO Authorization
+        #   Bearer — eso es para account tokens). Bearer da "Not Authorized".
+        # - Mutacion: serviceInstanceDeploy (sin V2). La V2 requiere account
+        #   token / scope mayor.
+        # - Si Railway esta caido o el token caduco, log warn y seguir — el
+        #   cron diario se encarga como safety net.
         if ($script:cfg.railway -and
             $script:cfg.railway.token -and
             $script:cfg.railway.service_id -and
             $script:cfg.railway.environment_id) {
             try {
                 $rwBody = @{
-                    query = 'mutation Deploy($serviceId: String!, $environmentId: String!) { serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId) }'
+                    query = 'mutation Deploy($serviceId: String!, $environmentId: String!) { serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId) }'
                     variables = @{
                         serviceId     = $script:cfg.railway.service_id
                         environmentId = $script:cfg.railway.environment_id
@@ -260,8 +266,8 @@ try {
                     -Uri 'https://backboard.railway.com/graphql/v2' `
                     -Method Post `
                     -Headers @{
-                        'Authorization' = "Bearer $($script:cfg.railway.token)"
-                        'Content-Type'  = 'application/json'
+                        'Project-Access-Token' = $script:cfg.railway.token
+                        'Content-Type'         = 'application/json'
                     } `
                     -Body $rwBody `
                     -TimeoutSec 30 `
